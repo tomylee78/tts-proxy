@@ -1,12 +1,10 @@
 {
     "name": "tts-proxy",
     "version": "1.0.0",
-    "description": "Vercel proxy for Azure TTS",
+    "description": "Azure TTS Proxy for Vercel",
     "main": "api/speak.js",
     "scripts": {
-        "start": "vercel dev"
+        "start": "node api/speak.js"
     },
-    "dependencies": {
-        "microsoft-cognitiveservices-speech-sdk": "^1.36.0"
-    }
+    "dependencies": {}
 }
