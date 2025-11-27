@@ -6,5 +6,8 @@
     "scripts": {
         "start": "node api/speak.js"
     },
-    "dependencies": {}
+    "dependencies": {
+        "microsoft-cognitiveservices-speech-sdk": "^1.36.0", 
+        "stream": "^0.0.2"
+    }
 }
