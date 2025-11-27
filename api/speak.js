@@ -1,18 +1,19 @@
-// /api/speak.js - 最終版本：包含 Azure SDK 整合
+// /api/speak.js - 最終版本：使用 Azure REST API
 
-const sdk = require("microsoft-cognitiveservices-speech-sdk");
-const { Writable } = require("stream");
+const axios = require('axios');
 
-// 設置允許 CORS 的來源
-const ALLOWED_ORIGIN = "http://127.0.0.1:5500";
+// 設置環境變數
 const AZURE_KEY = process.env.AZURE_SPEECH_KEY;
 const AZURE_REGION = process.env.AZURE_SPEECH_REGION;
+const ALLOWED_ORIGIN = 'http://127.0.0.1:5500'; 
+const ENDPOINT = `https://${AZURE_REGION}.tts.speech.microsoft.com/cognitiveservices/v1`;
 
-// 輔助函數：用於解析 JSON Body (防止 req.body undefined)
+// 輔助函數：用於解析 JSON Body
 const parseJsonBody = (req) => {
+    // Vercel 通常會自動處理，但我們提供一個防錯機制
     try {
-        if (req.headers["content-type"] === "application/json") {
-            return req.body && typeof req.body === "object" ? req.body : {};
+        if (req.headers && req.headers['content-type'] && req.headers['content-type'].includes('application/json')) {
+            return req.body && typeof req.body === 'object' ? req.body : {};
         }
     } catch (e) {
         return {};
@@ -20,16 +21,17 @@ const parseJsonBody = (req) => {
     return {};
 };
 
+
 module.exports = async (req, res) => {
     // --- 1. CORS 處理 ---
-    res.setHeader("Access-Control-Allow-Credentials", true);
-    res.setHeader("Access-Control-Allow-Origin", ALLOWED_ORIGIN);
-    res.setHeader("Access-Control-Allow-Methods", "OPTIONS,POST");
+    res.setHeader('Access-Control-Allow-Credentials', true);
+    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN); 
+    res.setHeader('Access-Control-Allow-Methods', 'OPTIONS,POST');
     res.setHeader(
-        "Access-Control-Allow-Headers",
-        "X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version"
+        'Access-Control-Allow-Headers',
+        'X-CSRF-Token, X-Requested-With, Accept, Accept-Version, Content-Length, Content-MD5, Content-Type, Date, X-Api-Version'
     );
-    if (req.method === "OPTIONS") {
+    if (req.method === 'OPTIONS') {
         res.status(200).end();
         return;
     }
@@ -38,64 +40,40 @@ module.exports = async (req, res) => {
     try {
         // 2. 解析請求 Body
         const body = parseJsonBody(req);
-        const { text, lang } = body;
-
+        const { text, lang } = body; 
+        
         // 檢查金鑰和文本
         if (!AZURE_KEY || !AZURE_REGION) {
-            return res.status(500).send("Environment variables AZURE_SPEECH_KEY or AZURE_SPEECH_REGION are not set.");
+            return res.status(500).send('Environment variables AZURE_SPEECH_KEY or AZURE_SPEECH_REGION are not set.');
         }
         if (!text || !lang) {
-            return res.status(400).send("Missing text or lang in request body.");
+            return res.status(400).send('Missing text or lang in request body.');
         }
 
-        // 3. 建立 Azure 語音設定
-        const speechConfig = sdk.SpeechConfig.fromSubscription(AZURE_KEY, AZURE_REGION);
-        speechConfig.speechSynthesisOutputFormat = sdk.SpeechSynthesisOutputFormat.Audio16Khz32KBitRateMonoMp3;
+        // 3. 建立 SSML (Speech Synthesis Markup Language) 請求內容
+        // 使用一個標準的中文聲音作為範例 (您可以根據您的 lang 變數來調整)
+        const ssml = `<speak version='1.0' xml:lang='${lang}'><voice name='zh-CN-XiaoxiaoNeural'>${text}</voice></speak>`;
 
-        // 4. 建立 Stream Buffer
-        const audioBuffer = [];
-        const pushStream = sdk.AudioOutputStream.createPullStream();
-
-        // 5. 將音訊流寫入 Node.js Writable Stream
-        const audioWriteStream = new Writable({
-            write(chunk, encoding, callback) {
-                audioBuffer.push(chunk);
-                callback();
+        // 4. 呼叫 Azure REST API
+        const azureResponse = await axios({
+            method: 'post',
+            url: ENDPOINT,
+            headers: {
+                'Ocp-Apim-Subscription-Key': AZURE_KEY,
+                'Content-Type': 'application/ssml+xml',
+                'X-Microsoft-OutputFormat': 'audio-16khz-32kbitrate-mono-mp3',
+                'User-Agent': 'tts-proxy-vercel'
             },
-            final(callback) {
-                callback();
-            },
+            data: ssml,
+            responseType: 'arraybuffer' // 接收二進制數據
         });
 
-        // 6. 建立合成器
-        const synthesizer = new sdk.SpeechSynthesizer(speechConfig, sdk.AudioConfig.fromStreamOutput(pushStream));
+        // 5. 回傳音訊數據給前端
+        res.setHeader('Content-Type', 'audio/mpeg');
+        res.status(200).send(azureResponse.data);
 
-        // 7. 執行語音合成
-        synthesizer.speakTextAsync(
-            text,
-            (result) => {
-                if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
-                    // 將 PullStream 導向 Writable Stream
-                    pushStream.read(audioWriteStream.write.bind(audioWriteStream));
-
-                    // 設置回應標頭
-                    res.setHeader("Content-Type", "audio/mpeg");
-                    res.status(200).send(Buffer.concat(audioBuffer));
-                } else if (result.reason === sdk.ResultReason.Canceled) {
-                    const cancellation = sdk.CancellationDetails.fromResult(result);
-                    console.error("Speech synthesis canceled:", cancellation.reason);
-                    res.status(500).send(`Speech synthesis failed: ${cancellation.errorDetails}`);
-                }
-                synthesizer.close();
-            },
-            (err) => {
-                console.error("Azure SDK Error:", err);
-                res.status(500).send(`Azure SDK Error: ${err}`);
-                synthesizer.close();
-            }
-        );
     } catch (error) {
-        console.error("API Error:", error);
-        res.status(500).send(`Internal Server Error: ${error.message}`);
+        console.error('API Error:', error.response ? error.response.data.toString() : error.message);
+        res.status(500).send(`Internal Server Error: Azure Call Failed. Details: ${error.response ? error.response.data.toString() : error.message}`);
     }
 };
